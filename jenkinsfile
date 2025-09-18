@@ -1,39 +1,56 @@
 pipeline {
-    agent any
+  agent any   // Exécuter sur n’importe quel agent (ex: ton Jenkins Dockerisé)
 
-    stages {
-        stage('Cloner le repo') {
-            steps {
-                git 'https://github.com/username/mon-projet-python.git'
-            }
-        }
+  options {
+    timestamps()   // Ajoute des timestamps aux logs
+  }
 
-        stage('Créer un environnement virtuel') {
-            steps {
-                sh 'python3 -m venv venv'
-                sh '. venv/bin/activate'
-            }
-        }
-
-        stage('Installer les dépendances') {
-            steps {
-                sh './venv/bin/pip install --upgrade pip'
-                sh './venv/bin/pip install -r requirements.txt'
-            }
-        }
-
-        stage('Lancer les tests') {
-            steps {
-                sh './venv/bin/pytest'
-            }
-        }
-
-        stage('Déploiement') {
-            steps {
-                // Exemple de déploiement sur un serveur via SSH
-                sh 'scp -r * user@serveur:/chemin/projet/'
-                sh 'ssh user@serveur "cd /chemin/projet && ./venv/bin/python app.py &"'
-            }
-        }
+  stages {
+    stage('Checkout') {   // 1) Récupère ton code source
+      steps {
+        checkout scm
+      }
     }
+
+    stage('Build & Push Docker') {   // 2) Build puis push l'image Docker
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'jensins-readonly',   // ID de ton credential Docker Hub
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_TOKEN'
+        )]) {
+          script {
+            // Nom fixe de ton image (toujours écrasée à chaque build)
+            def image = "${DOCKER_USER}/jenkins_cicd:latest"
+
+            sh """
+              set -e
+              echo "[Build] ${image}"
+              docker build -t "${image}" .
+
+              echo "[Login] Docker Hub"
+              echo "${DOCKER_TOKEN}" | docker login -u "${DOCKER_USER}" --password-stdin
+
+              echo "[Push] ${image}"
+              docker push "${image}"
+            """
+          }
+        }
+      }
+    }
+
+    stage('Deploy to Render (TEST)') {   // 3) Déclenche le déploiement Render
+      steps {
+        withCredentials([string(credentialsId: 'render-hook', variable: 'HOOK')]) {
+          sh 'curl -i -X POST "$HOOK"'
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      cleanWs()   // Nettoie le workspace après chaque build
+    }
+  }
 }
